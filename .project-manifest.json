@@ -69,6 +69,28 @@
       ]
     },
     {
+      "id": "register-standard",
+      "name": "Register standard",
+      "entry": "POST /standards",
+      "steps": [
+        "decode and validate the standard request and validity interval",
+        "normalize the code, reject a duplicate code, and verify the parent chain",
+        "commit the active standard and its audit event"
+      ],
+      "success": "returns a root or parent-backed standard with a usable chain",
+      "failure": "returns validation, duplicate, or broken/inactive/expired chain errors",
+      "verification": "workflowcheck registers a root and a child standard, then rejects a duplicate code, an orphan parent, and an inverted interval",
+      "module_ids": [
+        "runtimecheck",
+        "httpapi",
+        "assurance",
+        "domain",
+        "repository",
+        "contracts",
+        "bootstrap"
+      ]
+    },
+    {
       "id": "open-verification-case",
       "name": "Open verification case",
       "entry": "POST /cases",
@@ -144,8 +166,52 @@
         "create exactly one seal and make the case terminal"
       ],
       "success": "returns a sealed case and one evidence seal",
-      "failure": "returns conflict for a non-reviewable case or a duplicate seal",
+      "failure": "returns conflict for a non-reviewable case, a duplicate seal, or a broken/expired chain",
       "verification": "workflowcheck races two seal requests and verifies exactly one succeeds",
+      "module_ids": [
+        "runtimecheck",
+        "httpapi",
+        "assurance",
+        "domain",
+        "repository",
+        "contracts",
+        "bootstrap"
+      ]
+    },
+    {
+      "id": "calibration-trace",
+      "name": "Verify and freeze calibration trace",
+      "entry": "POST /cases/{id}/seal",
+      "steps": [
+        "resolve the case standard chain from working standard to root basis",
+        "reject broken links, cycles, deactivated, or expired standards",
+        "freeze the working-parent-root trace into the evidence seal"
+      ],
+      "success": "seal and case view carry the complete frozen trace",
+      "failure": "sealing is refused with trace_broken, trace_cycle, standard_inactive, or standard_expired",
+      "verification": "workflowcheck opens a case against a three-level chain, seals it, and verifies the trace before and after sealing",
+      "module_ids": [
+        "runtimecheck",
+        "httpapi",
+        "assurance",
+        "domain",
+        "repository",
+        "contracts",
+        "bootstrap"
+      ]
+    },
+    {
+      "id": "standard-lifecycle",
+      "name": "Standard withdrawal and historical evidence",
+      "entry": "POST /standards/{id}/deactivate",
+      "steps": [
+        "deactivate a standard and block new cases, measurements, and seals on it",
+        "keep the standard id/code on formed cases immutable",
+        "read sealed evidence by the facts frozen at seal time"
+      ],
+      "success": "new work is refused while sealed history still shows the active frozen chain",
+      "failure": "withdrawn or expired bases return standard_inactive or standard_expired on new use",
+      "verification": "workflowcheck seals evidence, withdraws the chain afterward, and confirms history is preserved while new work is blocked",
       "module_ids": [
         "runtimecheck",
         "httpapi",

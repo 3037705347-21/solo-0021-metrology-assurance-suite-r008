@@ -5,7 +5,7 @@
     ".go"
   ],
   "build_command": "go build ./...",
-  "testing": "deferred",
+  "testing": "go test ./...",
   "service": {
     "run_command": "go run ./cmd/metrology-service --addr 127.0.0.1:18121",
     "health_url": "http://127.0.0.1:18121/healthz"
@@ -14,6 +14,10 @@
     {
       "workflow_id": "register-device",
       "command": "go run ./cmd/workflowcheck --workflow register-device"
+    },
+    {
+      "workflow_id": "register-standard",
+      "command": "go run ./cmd/workflowcheck --workflow register-standard"
     },
     {
       "workflow_id": "open-verification-case",
@@ -30,6 +34,14 @@
     {
       "workflow_id": "seal-verification",
       "command": "go run ./cmd/workflowcheck --workflow seal-verification"
+    },
+    {
+      "workflow_id": "calibration-trace",
+      "command": "go run ./cmd/workflowcheck --workflow calibration-trace"
+    },
+    {
+      "workflow_id": "standard-lifecycle",
+      "command": "go run ./cmd/workflowcheck --workflow standard-lifecycle"
     }
   ]
 }

@@ -11,11 +11,15 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"strings"
 	"sync"
 	"time"
 
 	"example.com/solo-0021-metrology-assurance-suite/internal/bootstrap"
+)
+
+const (
+	windowStart = "2000-01-01T00:00:00Z"
+	windowEnd   = "2100-01-01T00:00:00Z"
 )
 
 type apiResponse struct {
@@ -36,10 +40,13 @@ func main() {
 
 	checks := map[string]func() error{
 		"register-device":          checkRegisterDevice,
+		"register-standard":        checkRegisterStandard,
 		"open-verification-case":   checkOpenVerificationCase,
 		"record-measurement":       checkRecordMeasurement,
 		"reopen-verification-case": checkReopenVerificationCase,
 		"seal-verification":        checkSealVerification,
+		"calibration-trace":        checkCalibrationTrace,
+		"standard-lifecycle":       checkStandardLifecycle,
 	}
 	run, ok := checks[*workflow]
 	if !ok {
@@ -112,6 +119,99 @@ func checkRegisterDevice() error {
 	return expectErrorCode(duplicate, "duplicate_asset_tag")
 }
 
+func checkRegisterStandard() error {
+	h := newHarness()
+	defer h.close()
+
+	root, err := h.request(http.MethodPost, "/standards", map[string]any{
+		"code":          " std-root ",
+		"name":          "National Reference",
+		"valid_from":    windowStart,
+		"valid_through": windowEnd,
+		"custodian":     "Lin",
+	})
+	if err != nil {
+		return err
+	}
+	if err := expectStatus(root, http.StatusCreated); err != nil {
+		return err
+	}
+	rootID, err := nestedString(root.Body, "standard", "id")
+	if err != nil {
+		return err
+	}
+	rootCode, err := nestedString(root.Body, "standard", "code")
+	if err != nil {
+		return err
+	}
+	if rootCode != "STD-ROOT" {
+		return fmt.Errorf("standard code was not normalized: %q", rootCode)
+	}
+
+	child, err := h.request(http.MethodPost, "/standards", map[string]any{
+		"code":          "std-working",
+		"name":          "Lab Working Standard",
+		"parent_id":     rootID,
+		"valid_from":    windowStart,
+		"valid_through": windowEnd,
+		"custodian":     "Lin",
+	})
+	if err != nil {
+		return err
+	}
+	if err := expectStatus(child, http.StatusCreated); err != nil {
+		return err
+	}
+
+	duplicate, err := h.request(http.MethodPost, "/standards", map[string]any{
+		"code":       "STD-ROOT",
+		"name":       "Duplicate Root",
+		"valid_from": windowStart,
+		"custodian":  "Mira",
+	})
+	if err != nil {
+		return err
+	}
+	if err := expectStatus(duplicate, http.StatusConflict); err != nil {
+		return err
+	}
+	if err := expectErrorCode(duplicate, "duplicate_standard_code"); err != nil {
+		return err
+	}
+
+	broken, err := h.request(http.MethodPost, "/standards", map[string]any{
+		"code":       "STD-BROKEN",
+		"name":       "Orphan Standard",
+		"parent_id":  "standard-9999",
+		"valid_from": windowStart,
+		"custodian":  "Mira",
+	})
+	if err != nil {
+		return err
+	}
+	if err := expectStatus(broken, http.StatusConflict); err != nil {
+		return err
+	}
+	if err := expectErrorCode(broken, "trace_broken"); err != nil {
+		return err
+	}
+
+	inverted, err := h.request(http.MethodPost, "/standards", map[string]any{
+		"code":          "STD-BAD",
+		"name":          "Bad Interval",
+		"valid_from":    windowEnd,
+		"valid_through": windowStart,
+		"custodian":     "Mira",
+	})
+	if err != nil {
+		return err
+	}
+	if err := expectStatus(inverted, http.StatusBadRequest); err != nil {
+		return err
+	}
+	return expectErrorCode(inverted, "invalid_input")
+}
+
 func checkOpenVerificationCase() error {
 	h := newHarness()
 	defer h.close()
@@ -120,7 +220,11 @@ func checkOpenVerificationCase() error {
 	if err != nil {
 		return err
 	}
-	opened, err := h.openCase(deviceID)
+	standardID, err := h.createRootStandard("STD-1101")
+	if err != nil {
+		return err
+	}
+	opened, err := h.openCase(deviceID, standardID)
 	if err != nil {
 		return err
 	}
@@ -135,6 +239,9 @@ func checkOpenVerificationCase() error {
 	if state != "awaiting_measurement" {
 		return fmt.Errorf("opened case state = %q", state)
 	}
+	if err := expectTrace(opened.Body, []string{"STD-1101"}, []string{"root"}); err != nil {
+		return err
+	}
 
 	read, err := h.request(http.MethodGet, "/cases/"+caseID, nil)
 	if err != nil {
@@ -145,10 +252,11 @@ func checkOpenVerificationCase() error {
 	}
 
 	second, err := h.request(http.MethodPost, "/cases", map[string]any{
-		"device_id": deviceID,
-		"nominal":   25.0,
-		"tolerance": 0.5,
-		"steward":   "Qiao",
+		"device_id":   deviceID,
+		"standard_id": standardID,
+		"nominal":     25.0,
+		"tolerance":   0.5,
+		"steward":     "Qiao",
 	})
 	if err != nil {
 		return err
@@ -156,7 +264,28 @@ func checkOpenVerificationCase() error {
 	if err := expectStatus(second, http.StatusConflict); err != nil {
 		return err
 	}
-	return expectErrorCode(second, "active_case_exists")
+	if err := expectErrorCode(second, "active_case_exists"); err != nil {
+		return err
+	}
+
+	missingDeviceID, err := h.createDevice("MET-1102")
+	if err != nil {
+		return err
+	}
+	missing, err := h.request(http.MethodPost, "/cases", map[string]any{
+		"device_id":   missingDeviceID,
+		"standard_id": "standard-9999",
+		"nominal":     25.0,
+		"tolerance":   0.5,
+		"steward":     "Qiao",
+	})
+	if err != nil {
+		return err
+	}
+	if err := expectStatus(missing, http.StatusNotFound); err != nil {
+		return err
+	}
+	return expectErrorCode(missing, "not_found")
 }
 
 func checkRecordMeasurement() error {
@@ -167,7 +296,11 @@ func checkRecordMeasurement() error {
 	if err != nil {
 		return err
 	}
-	opened, err := h.openCase(deviceID)
+	standardID, err := h.createRootStandard("STD-1201")
+	if err != nil {
+		return err
+	}
+	opened, err := h.openCase(deviceID, standardID)
 	if err != nil {
 		return err
 	}
@@ -212,7 +345,11 @@ func checkRecordMeasurement() error {
 	if err != nil {
 		return err
 	}
-	rejectCase, err := h.openCase(rejectDeviceID)
+	rejectStandardID, err := h.createRootStandard("STD-1202")
+	if err != nil {
+		return err
+	}
+	rejectCase, err := h.openCase(rejectDeviceID, rejectStandardID)
 	if err != nil {
 		return err
 	}
@@ -375,6 +512,240 @@ func checkSealVerification() error {
 	return nil
 }
 
+// checkCalibrationTrace verifies that a case opened against a three-level chain
+// carries the complete working -> parent -> root path, and that sealing freezes
+// that path into the evidence seal.
+func checkCalibrationTrace() error {
+	h := newHarness()
+	defer h.close()
+
+	rootID, err := h.createRootStandard("STD-ROOT-1501")
+	if err != nil {
+		return err
+	}
+	parentID, err := h.createStandard("STD-REF-1501", rootID)
+	if err != nil {
+		return err
+	}
+	workingID, err := h.createStandard("STD-WORK-1501", parentID)
+	if err != nil {
+		return err
+	}
+
+	deviceID, err := h.createDevice("MET-1501")
+	if err != nil {
+		return err
+	}
+	opened, err := h.openCase(deviceID, workingID)
+	if err != nil {
+		return err
+	}
+	caseID, err := nestedString(opened.Body, "case", "id")
+	if err != nil {
+		return err
+	}
+	if err := expectTrace(opened.Body,
+		[]string{"STD-WORK-1501", "STD-REF-1501", "STD-ROOT-1501"},
+		[]string{"working", "parent", "root"}); err != nil {
+		return err
+	}
+
+	measured, err := h.recordMeasurement(caseID, 25.2, "Rui")
+	if err != nil {
+		return err
+	}
+	if err := expectStatus(measured, http.StatusCreated); err != nil {
+		return err
+	}
+	sealed, err := h.request(http.MethodPost, "/cases/"+caseID+"/seal", map[string]any{
+		"reviewer": "Verifier Ma",
+		"summary":  "sealed with full calibration chain",
+	})
+	if err != nil {
+		return err
+	}
+	if err := expectStatus(sealed, http.StatusCreated); err != nil {
+		return err
+	}
+	sealCodes, err := traceCodes(sealed.Body, "seal", "trace")
+	if err != nil {
+		return err
+	}
+	if len(sealCodes) != 3 || sealCodes[0] != "STD-WORK-1501" || sealCodes[2] != "STD-ROOT-1501" {
+		return fmt.Errorf("sealed trace chain = %v", sealCodes)
+	}
+
+	read, err := h.request(http.MethodGet, "/cases/"+caseID, nil)
+	if err != nil {
+		return err
+	}
+	if err := expectStatus(read, http.StatusOK); err != nil {
+		return err
+	}
+	return expectTrace(read.Body,
+		[]string{"STD-WORK-1501", "STD-REF-1501", "STD-ROOT-1501"},
+		[]string{"working", "parent", "root"})
+}
+
+// checkStandardLifecycle verifies that deactivating a standard blocks new work
+// (opening cases, recording mid-case measurements, sealing review-ready cases)
+// while already-sealed evidence keeps reading by the facts frozen at seal time.
+func checkStandardLifecycle() error {
+	h := newHarness()
+	defer h.close()
+
+	// Case A is sealed while the chain is healthy.
+	rootAID, err := h.createRootStandard("STD-ROOT-1601")
+	if err != nil {
+		return err
+	}
+	workingAID, err := h.createStandard("STD-WORK-1601", rootAID)
+	if err != nil {
+		return err
+	}
+	sealedCaseID, err := h.readyCaseWithStandard("MET-1601", workingAID)
+	if err != nil {
+		return err
+	}
+	sealed, err := h.request(http.MethodPost, "/cases/"+sealedCaseID+"/seal", map[string]any{
+		"reviewer": "Verifier Ma",
+		"summary":  "sealed before withdrawal",
+	})
+	if err != nil {
+		return err
+	}
+	if err := expectStatus(sealed, http.StatusCreated); err != nil {
+		return err
+	}
+
+	// Withdraw the working standard after the seal.
+	deactivated, err := h.request(http.MethodPost, "/standards/"+workingAID+"/deactivate", map[string]any{
+		"actor": "Steward Lin",
+	})
+	if err != nil {
+		return err
+	}
+	if err := expectStatus(deactivated, http.StatusOK); err != nil {
+		return err
+	}
+	status, err := nestedString(deactivated.Body, "standard", "status")
+	if err != nil {
+		return err
+	}
+	if status != "deactivated" {
+		return fmt.Errorf("standard status = %q", status)
+	}
+
+	// The sealed evidence still reads by the facts at sealing time.
+	read, err := h.request(http.MethodGet, "/cases/"+sealedCaseID, nil)
+	if err != nil {
+		return err
+	}
+	if err := expectStatus(read, http.StatusOK); err != nil {
+		return err
+	}
+	if state, _ := nestedString(read.Body, "case", "state"); state != "sealed" {
+		return fmt.Errorf("historical sealed case state = %q", state)
+	}
+	if err := expectTrace(read.Body,
+		[]string{"STD-WORK-1601", "STD-ROOT-1601"},
+		[]string{"working", "root"}); err != nil {
+		return fmt.Errorf("sealed evidence changed after withdrawal: %w", err)
+	}
+	frozenStatus, err := nestedString(read.Body, "trace", "links", 0, "status")
+	if err != nil {
+		return err
+	}
+	if frozenStatus != "active" {
+		return fmt.Errorf("frozen link status was rewritten to %q", frozenStatus)
+	}
+
+	// A new case cannot reference the withdrawn standard.
+	newDeviceID, err := h.createDevice("MET-1602")
+	if err != nil {
+		return err
+	}
+	blockedOpen, err := h.request(http.MethodPost, "/cases", map[string]any{
+		"device_id":   newDeviceID,
+		"standard_id": workingAID,
+		"nominal":     25.0,
+		"tolerance":   0.5,
+		"steward":     "Qiao",
+	})
+	if err != nil {
+		return err
+	}
+	if err := expectStatus(blockedOpen, http.StatusConflict); err != nil {
+		return err
+	}
+	if err := expectErrorCode(blockedOpen, "standard_inactive"); err != nil {
+		return err
+	}
+
+	// A case opened while healthy cannot accept measurements after withdrawal.
+	rootBID, err := h.createRootStandard("STD-ROOT-1603")
+	if err != nil {
+		return err
+	}
+	workingBID, err := h.createStandard("STD-WORK-1603", rootBID)
+	if err != nil {
+		return err
+	}
+	deviceBID, err := h.createDevice("MET-1603")
+	if err != nil {
+		return err
+	}
+	openedB, err := h.openCase(deviceBID, workingBID)
+	if err != nil {
+		return err
+	}
+	caseBID, err := nestedString(openedB.Body, "case", "id")
+	if err != nil {
+		return err
+	}
+	if _, err := h.request(http.MethodPost, "/standards/"+workingBID+"/deactivate", map[string]any{
+		"actor": "Steward Lin",
+	}); err != nil {
+		return err
+	}
+	blockedMeasurement, err := h.recordMeasurement(caseBID, 25.1, "Rui")
+	if err != nil {
+		return err
+	}
+	if err := expectStatus(blockedMeasurement, http.StatusConflict); err != nil {
+		return err
+	}
+	if err := expectErrorCode(blockedMeasurement, "standard_inactive"); err != nil {
+		return err
+	}
+
+	// A review-ready case cannot be sealed once its basis lapses.
+	rootCID, err := h.createRootStandard("STD-ROOT-1604")
+	if err != nil {
+		return err
+	}
+	readyCaseID, err := h.readyCaseWithStandard("MET-1604", rootCID)
+	if err != nil {
+		return err
+	}
+	if _, err := h.request(http.MethodPost, "/standards/"+rootCID+"/deactivate", map[string]any{
+		"actor": "Steward Lin",
+	}); err != nil {
+		return err
+	}
+	blockedSeal, err := h.request(http.MethodPost, "/cases/"+readyCaseID+"/seal", map[string]any{
+		"reviewer": "Verifier Ma",
+		"summary":  "must not seal on a withdrawn basis",
+	})
+	if err != nil {
+		return err
+	}
+	if err := expectStatus(blockedSeal, http.StatusConflict); err != nil {
+		return err
+	}
+	return expectErrorCode(blockedSeal, "standard_inactive")
+}
+
 func newHarness() *harness {
 	server := httptest.NewServer(bootstrap.NewHandler())
 	return &harness{
@@ -440,12 +811,38 @@ func (h *harness) createDevice(tag string) (string, error) {
 	return nestedString(response.Body, "device", "id")
 }
 
-func (h *harness) openCase(deviceID string) (apiResponse, error) {
+func (h *harness) createRootStandard(code string) (string, error) {
+	return h.createStandard(code, "")
+}
+
+func (h *harness) createStandard(code, parentID string) (string, error) {
+	body := map[string]any{
+		"code":          code,
+		"name":          "Standard " + code,
+		"valid_from":    windowStart,
+		"valid_through": windowEnd,
+		"custodian":     "Lin",
+	}
+	if parentID != "" {
+		body["parent_id"] = parentID
+	}
+	response, err := h.request(http.MethodPost, "/standards", body)
+	if err != nil {
+		return "", err
+	}
+	if err := expectStatus(response, http.StatusCreated); err != nil {
+		return "", err
+	}
+	return nestedString(response.Body, "standard", "id")
+}
+
+func (h *harness) openCase(deviceID, standardID string) (apiResponse, error) {
 	response, err := h.request(http.MethodPost, "/cases", map[string]any{
-		"device_id": deviceID,
-		"nominal":   25.0,
-		"tolerance": 0.5,
-		"steward":   "Qiao",
+		"device_id":   deviceID,
+		"standard_id": standardID,
+		"nominal":     25.0,
+		"tolerance":   0.5,
+		"steward":     "Qiao",
 	})
 	if err != nil {
 		return apiResponse{}, err
@@ -468,7 +865,11 @@ func (h *harness) rejectedCase(tag string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	opened, err := h.openCase(deviceID)
+	standardID, err := h.createRootStandard("STD-" + tag)
+	if err != nil {
+		return "", err
+	}
+	opened, err := h.openCase(deviceID, standardID)
 	if err != nil {
 		return "", err
 	}
@@ -487,11 +888,19 @@ func (h *harness) rejectedCase(tag string) (string, error) {
 }
 
 func (h *harness) readyCase(tag string) (string, error) {
+	standardID, err := h.createRootStandard("STD-" + tag)
+	if err != nil {
+		return "", err
+	}
+	return h.readyCaseWithStandard(tag, standardID)
+}
+
+func (h *harness) readyCaseWithStandard(tag, standardID string) (string, error) {
 	deviceID, err := h.createDevice(tag)
 	if err != nil {
 		return "", err
 	}
-	opened, err := h.openCase(deviceID)
+	opened, err := h.openCase(deviceID, standardID)
 	if err != nil {
 		return "", err
 	}
@@ -527,14 +936,73 @@ func expectErrorCode(response apiResponse, expected string) error {
 	return nil
 }
 
-func nestedString(root map[string]any, path ...string) (string, error) {
-	value, err := nestedValue(root, path...)
+func traceCodes(root map[string]any, path ...any) ([]string, error) {
+	value, err := nestedAny(root, path...)
+	if err != nil {
+		return nil, err
+	}
+	items, ok := value.([]any)
+	if !ok {
+		return nil, fmt.Errorf("%v is not an array", path)
+	}
+	codes := make([]string, 0, len(items))
+	for _, item := range items {
+		link, ok := item.(map[string]any)
+		if !ok {
+			return nil, errors.New("trace link is not an object")
+		}
+		code, ok := link["code"].(string)
+		if !ok {
+			return nil, errors.New("trace link has no string code")
+		}
+		codes = append(codes, code)
+	}
+	return codes, nil
+}
+
+func expectTrace(root map[string]any, codes, roles []string) error {
+	valid, err := nestedAny(root, "trace", "valid")
+	if err != nil {
+		return err
+	}
+	if valid != true {
+		reason, _ := nestedString(root, "trace", "reason")
+		return fmt.Errorf("trace is not valid (reason=%q)", reason)
+	}
+	value, err := nestedAny(root, "trace", "links")
+	if err != nil {
+		return err
+	}
+	items, ok := value.([]any)
+	if !ok {
+		return errors.New("trace links is not an array")
+	}
+	if len(items) != len(codes) {
+		return fmt.Errorf("trace length = %d, expected %d", len(items), len(codes))
+	}
+	for index, raw := range items {
+		link, ok := raw.(map[string]any)
+		if !ok {
+			return fmt.Errorf("trace[%d] is not an object", index)
+		}
+		if link["code"] != codes[index] {
+			return fmt.Errorf("trace[%d] code = %v, expected %q", index, link["code"], codes[index])
+		}
+		if link["role"] != roles[index] {
+			return fmt.Errorf("trace[%d] role = %v, expected %q", index, link["role"], roles[index])
+		}
+	}
+	return nil
+}
+
+func nestedString(root map[string]any, path ...any) (string, error) {
+	value, err := nestedAny(root, path...)
 	if err != nil {
 		return "", err
 	}
 	text, ok := value.(string)
 	if !ok {
-		return "", fmt.Errorf("%s is not a string", strings.Join(path, "."))
+		return "", fmt.Errorf("%v is not a string", path)
 	}
 	return text, nil
 }
@@ -564,8 +1032,8 @@ func nestedSlice(root map[string]any, key string) ([]any, error) {
 }
 
 func hasEvent(root map[string]any, kind string) bool {
-	items, err := nestedSlice(root, "events")
-	if err != nil {
+	items, ok := root["events"].([]any)
+	if !ok {
 		return false
 	}
 	for _, item := range items {
@@ -578,14 +1046,6 @@ func hasEvent(root map[string]any, kind string) bool {
 		}
 	}
 	return false
-}
-
-func nestedValue(root map[string]any, path ...string) (any, error) {
-	parts := make([]any, 0, len(path))
-	for _, part := range path {
-		parts = append(parts, part)
-	}
-	return nestedAny(root, parts...)
 }
 
 func nestedAny(root map[string]any, path ...any) (any, error) {

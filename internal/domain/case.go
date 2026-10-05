@@ -17,29 +17,33 @@ const (
 )
 
 type VerificationCase struct {
-	ID        string     `json:"id"`
-	DeviceID  string     `json:"device_id"`
-	Nominal   float64    `json:"nominal"`
-	Tolerance float64    `json:"tolerance"`
-	Steward   string     `json:"steward"`
-	State     CaseState  `json:"state"`
-	Version   int        `json:"version"`
-	OpenedAt  time.Time  `json:"opened_at"`
-	UpdatedAt time.Time  `json:"updated_at"`
-	SealedAt  *time.Time `json:"sealed_at,omitempty"`
+	ID           string     `json:"id"`
+	DeviceID     string     `json:"device_id"`
+	StandardID   string     `json:"standard_id"`
+	StandardCode string     `json:"standard_code"`
+	Nominal      float64    `json:"nominal"`
+	Tolerance    float64    `json:"tolerance"`
+	Steward      string     `json:"steward"`
+	State        CaseState  `json:"state"`
+	Version      int        `json:"version"`
+	OpenedAt     time.Time  `json:"opened_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
+	SealedAt     *time.Time `json:"sealed_at,omitempty"`
 }
 
-func NewVerificationCase(id, deviceID string, nominal, tolerance float64, steward string, at time.Time) (VerificationCase, error) {
+func NewVerificationCase(id, deviceID, standardID, standardCode string, nominal, tolerance float64, steward string, at time.Time) (VerificationCase, error) {
 	item := VerificationCase{
-		ID:        strings.TrimSpace(id),
-		DeviceID:  strings.TrimSpace(deviceID),
-		Nominal:   nominal,
-		Tolerance: tolerance,
-		Steward:   strings.TrimSpace(steward),
-		State:     CaseAwaitingMeasurement,
-		Version:   1,
-		OpenedAt:  at.UTC(),
-		UpdatedAt: at.UTC(),
+		ID:           strings.TrimSpace(id),
+		DeviceID:     strings.TrimSpace(deviceID),
+		StandardID:   strings.TrimSpace(standardID),
+		StandardCode: strings.TrimSpace(standardCode),
+		Nominal:      nominal,
+		Tolerance:    tolerance,
+		Steward:      strings.TrimSpace(steward),
+		State:        CaseAwaitingMeasurement,
+		Version:      1,
+		OpenedAt:     at.UTC(),
+		UpdatedAt:    at.UTC(),
 	}
 	if err := item.Validate(); err != nil {
 		return VerificationCase{}, err
@@ -48,8 +52,8 @@ func NewVerificationCase(id, deviceID string, nominal, tolerance float64, stewar
 }
 
 func (c VerificationCase) Validate() error {
-	if c.ID == "" || c.DeviceID == "" || c.Steward == "" {
-		return fmt.Errorf("%w: case id, device id, and steward are required", ErrInvalidInput)
+	if c.ID == "" || c.DeviceID == "" || c.StandardID == "" || c.StandardCode == "" || c.Steward == "" {
+		return fmt.Errorf("%w: case id, device id, standard, and steward are required", ErrInvalidInput)
 	}
 	if !isFinite(c.Nominal) || !isFinite(c.Tolerance) || c.Tolerance <= 0 {
 		return fmt.Errorf("%w: nominal must be finite and tolerance must be positive", ErrInvalidInput)
