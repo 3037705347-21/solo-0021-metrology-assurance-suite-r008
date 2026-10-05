@@ -1,6 +1,10 @@
 package contracts
 
-import "example.com/solo-0021-metrology-assurance-suite/internal/domain"
+import (
+	"time"
+
+	"example.com/solo-0021-metrology-assurance-suite/internal/domain"
+)
 
 type RegisterDeviceRequest struct {
 	AssetTag string `json:"asset_tag"`
@@ -9,11 +13,32 @@ type RegisterDeviceRequest struct {
 	Steward  string `json:"steward"`
 }
 
+type RegisterStandardRequest struct {
+	Code       string    `json:"code"`
+	SuperiorID string    `json:"superior_id"`
+	ValidFrom  time.Time `json:"valid_from"`
+	ValidUntil time.Time `json:"valid_until"`
+	Steward    string    `json:"steward"`
+}
+
+type AmendStandardRequest struct {
+	SuperiorID string    `json:"superior_id"`
+	ValidFrom  time.Time `json:"valid_from"`
+	ValidUntil time.Time `json:"valid_until"`
+	Actor      string    `json:"actor"`
+}
+
+type DeactivateStandardRequest struct {
+	Actor  string `json:"actor"`
+	Reason string `json:"reason"`
+}
+
 type OpenCaseRequest struct {
-	DeviceID  string  `json:"device_id"`
-	Nominal   float64 `json:"nominal"`
-	Tolerance float64 `json:"tolerance"`
-	Steward   string  `json:"steward"`
+	DeviceID   string  `json:"device_id"`
+	StandardID string  `json:"standard_id"`
+	Nominal    float64 `json:"nominal"`
+	Tolerance  float64 `json:"tolerance"`
+	Steward    string  `json:"steward"`
 }
 
 type RecordMeasurementRequest struct {
@@ -33,6 +58,10 @@ type SealCaseRequest struct {
 
 type DeviceResponse struct {
 	Device domain.Device `json:"device"`
+}
+
+type StandardResponse struct {
+	Standard domain.Standard `json:"standard"`
 }
 
 type CaseResponse struct {

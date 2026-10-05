@@ -11,6 +11,7 @@ import (
 type Repository struct {
 	mu           sync.RWMutex
 	devices      map[string]domain.Device
+	standards    map[string]domain.Standard
 	cases        map[string]domain.VerificationCase
 	measurements map[string][]domain.Measurement
 	seals        map[string]domain.EvidenceSeal
@@ -21,6 +22,7 @@ type Repository struct {
 func New() *Repository {
 	return &Repository{
 		devices:      make(map[string]domain.Device),
+		standards:    make(map[string]domain.Standard),
 		cases:        make(map[string]domain.VerificationCase),
 		measurements: make(map[string][]domain.Measurement),
 		seals:        make(map[string]domain.EvidenceSeal),
@@ -30,6 +32,7 @@ func New() *Repository {
 
 type Snapshot struct {
 	devices      map[string]domain.Device
+	standards    map[string]domain.Standard
 	cases        map[string]domain.VerificationCase
 	measurements map[string][]domain.Measurement
 	seals        map[string]domain.EvidenceSeal
@@ -48,6 +51,11 @@ func (s Snapshot) DeviceByTag(tag string) (domain.Device, bool) {
 		}
 	}
 	return domain.Device{}, false
+}
+
+func (s Snapshot) Standard(id string) (domain.Standard, bool) {
+	item, ok := s.standards[id]
+	return item, ok
 }
 
 func (s Snapshot) Case(id string) (domain.VerificationCase, bool) {
@@ -92,6 +100,7 @@ func (s Snapshot) AllCases() []domain.VerificationCase {
 
 type Mutation struct {
 	devices      map[string]domain.Device
+	standards    map[string]domain.Standard
 	cases        map[string]domain.VerificationCase
 	measurements map[string][]domain.Measurement
 	seals        map[string]domain.EvidenceSeal
@@ -131,6 +140,36 @@ func (m *Mutation) UpdateDevice(item domain.Device) error {
 		return fmt.Errorf("%w: device %s", domain.ErrNotFound, item.ID)
 	}
 	m.devices[item.ID] = item
+	return nil
+}
+
+func (m *Mutation) Standard(id string) (domain.Standard, bool) {
+	item, ok := m.standards[id]
+	return item, ok
+}
+
+func (m *Mutation) StandardByCode(code string) (domain.Standard, bool) {
+	for _, item := range m.standards {
+		if item.Code == code {
+			return item, true
+		}
+	}
+	return domain.Standard{}, false
+}
+
+func (m *Mutation) PutStandard(item domain.Standard) error {
+	if _, exists := m.standards[item.ID]; exists {
+		return fmt.Errorf("%w: standard %s", domain.ErrStateConflict, item.ID)
+	}
+	m.standards[item.ID] = item
+	return nil
+}
+
+func (m *Mutation) UpdateStandard(item domain.Standard) error {
+	if _, exists := m.standards[item.ID]; !exists {
+		return fmt.Errorf("%w: standard %s", domain.ErrNotFound, item.ID)
+	}
+	m.standards[item.ID] = item
 	return nil
 }
 
@@ -221,6 +260,7 @@ func (r *Repository) Mutate(ctx context.Context, fn func(*Mutation) error) error
 
 	next := &Mutation{
 		devices:      cloneDevices(r.devices),
+		standards:    cloneStandards(r.standards),
 		cases:        cloneCases(r.cases),
 		measurements: cloneMeasurements(r.measurements),
 		seals:        cloneSeals(r.seals),
@@ -231,6 +271,7 @@ func (r *Repository) Mutate(ctx context.Context, fn func(*Mutation) error) error
 		return err
 	}
 	r.devices = next.devices
+	r.standards = next.standards
 	r.cases = next.cases
 	r.measurements = next.measurements
 	r.seals = next.seals
@@ -242,6 +283,7 @@ func (r *Repository) Mutate(ctx context.Context, fn func(*Mutation) error) error
 func (r *Repository) snapshot() Snapshot {
 	return Snapshot{
 		devices:      cloneDevices(r.devices),
+		standards:    cloneStandards(r.standards),
 		cases:        cloneCases(r.cases),
 		measurements: cloneMeasurements(r.measurements),
 		seals:        cloneSeals(r.seals),
@@ -251,6 +293,14 @@ func (r *Repository) snapshot() Snapshot {
 
 func cloneDevices(values map[string]domain.Device) map[string]domain.Device {
 	result := make(map[string]domain.Device, len(values))
+	for key, value := range values {
+		result[key] = value
+	}
+	return result
+}
+
+func cloneStandards(values map[string]domain.Standard) map[string]domain.Standard {
+	result := make(map[string]domain.Standard, len(values))
 	for key, value := range values {
 		result[key] = value
 	}

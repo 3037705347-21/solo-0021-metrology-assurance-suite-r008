@@ -33,6 +33,57 @@ func (s *Server) device(writer http.ResponseWriter, request *http.Request) {
 	writeJSON(writer, http.StatusOK, contracts.DeviceResponse{Device: device})
 }
 
+func (s *Server) registerStandard(writer http.ResponseWriter, request *http.Request) {
+	input, err := decodeJSON[contracts.RegisterStandardRequest](writer, request)
+	if err != nil {
+		writeError(writer, err)
+		return
+	}
+	standard, err := s.service.RegisterStandard(request.Context(), input)
+	if err != nil {
+		writeError(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusCreated, contracts.StandardResponse{Standard: standard})
+}
+
+func (s *Server) standard(writer http.ResponseWriter, request *http.Request) {
+	standard, err := s.service.Standard(request.Context(), request.PathValue("id"))
+	if err != nil {
+		writeError(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, contracts.StandardResponse{Standard: standard})
+}
+
+func (s *Server) amendStandard(writer http.ResponseWriter, request *http.Request) {
+	input, err := decodeJSON[contracts.AmendStandardRequest](writer, request)
+	if err != nil {
+		writeError(writer, err)
+		return
+	}
+	standard, err := s.service.AmendStandardBasis(request.Context(), request.PathValue("id"), input)
+	if err != nil {
+		writeError(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, contracts.StandardResponse{Standard: standard})
+}
+
+func (s *Server) deactivateStandard(writer http.ResponseWriter, request *http.Request) {
+	input, err := decodeOptionalJSON[contracts.DeactivateStandardRequest](writer, request)
+	if err != nil {
+		writeError(writer, err)
+		return
+	}
+	standard, err := s.service.DeactivateStandard(request.Context(), request.PathValue("id"), input)
+	if err != nil {
+		writeError(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, contracts.StandardResponse{Standard: standard})
+}
+
 func (s *Server) openCase(writer http.ResponseWriter, request *http.Request) {
 	input, err := decodeJSON[contracts.OpenCaseRequest](writer, request)
 	if err != nil {

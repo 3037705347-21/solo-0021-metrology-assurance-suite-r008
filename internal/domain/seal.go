@@ -7,16 +7,17 @@ import (
 )
 
 type EvidenceSeal struct {
-	ID            string    `json:"id"`
-	CaseID        string    `json:"case_id"`
-	DeviceID      string    `json:"device_id"`
-	MeasurementID string    `json:"measurement_id"`
-	Reviewer      string    `json:"reviewer"`
-	Summary       string    `json:"summary"`
-	SealedAt      time.Time `json:"sealed_at"`
+	ID            string      `json:"id"`
+	CaseID        string      `json:"case_id"`
+	DeviceID      string      `json:"device_id"`
+	MeasurementID string      `json:"measurement_id"`
+	Reviewer      string      `json:"reviewer"`
+	Summary       string      `json:"summary"`
+	Chain         []BasisLink `json:"chain"`
+	SealedAt      time.Time   `json:"sealed_at"`
 }
 
-func NewEvidenceSeal(id, caseID, deviceID, measurementID, reviewer, summary string, at time.Time) (EvidenceSeal, error) {
+func NewEvidenceSeal(id, caseID, deviceID, measurementID, reviewer, summary string, chain []BasisLink, at time.Time) (EvidenceSeal, error) {
 	item := EvidenceSeal{
 		ID:            strings.TrimSpace(id),
 		CaseID:        strings.TrimSpace(caseID),
@@ -24,6 +25,7 @@ func NewEvidenceSeal(id, caseID, deviceID, measurementID, reviewer, summary stri
 		MeasurementID: strings.TrimSpace(measurementID),
 		Reviewer:      strings.TrimSpace(reviewer),
 		Summary:       strings.TrimSpace(summary),
+		Chain:         append([]BasisLink(nil), chain...),
 		SealedAt:      at.UTC(),
 	}
 	if err := item.Validate(); err != nil {
@@ -38,6 +40,12 @@ func (s EvidenceSeal) Validate() error {
 	}
 	if s.SealedAt.IsZero() {
 		return fmt.Errorf("%w: seal time is required", ErrInvalidInput)
+	}
+	if len(s.Chain) == 0 {
+		return fmt.Errorf("%w: the verified traceability chain is required", ErrInvalidInput)
+	}
+	if err := ValidateChainLinks(s.Chain[0].StandardID, s.Chain); err != nil {
+		return err
 	}
 	return nil
 }

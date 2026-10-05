@@ -26,6 +26,24 @@ func decodeJSON[T any](writer http.ResponseWriter, request *http.Request) (T, er
 	return input, nil
 }
 
+// decodeOptionalJSON accepts an empty body and otherwise behaves like
+// decodeJSON, so simple lifecycle actions can be invoked without a payload.
+func decodeOptionalJSON[T any](writer http.ResponseWriter, request *http.Request) (T, error) {
+	var input T
+	decoder := json.NewDecoder(http.MaxBytesReader(writer, request.Body, maxRequestBytes))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		if errors.Is(err, io.EOF) {
+			return input, nil
+		}
+		return input, fmt.Errorf("%w: invalid JSON request: %v", domain.ErrInvalidInput, err)
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return input, fmt.Errorf("%w: request body must contain one JSON value", domain.ErrInvalidInput)
+	}
+	return input, nil
+}
+
 func writeJSON(writer http.ResponseWriter, status int, value any) {
 	writer.Header().Set("Content-Type", "application/json; charset=utf-8")
 	writer.WriteHeader(status)
@@ -54,10 +72,14 @@ func errorStatus(err error) (int, string) {
 		return http.StatusNotFound, "not_found"
 	case errors.Is(err, domain.ErrDuplicateAssetTag):
 		return http.StatusConflict, "duplicate_asset_tag"
+	case errors.Is(err, domain.ErrDuplicateStandardCode):
+		return http.StatusConflict, "duplicate_standard_code"
 	case errors.Is(err, domain.ErrActiveCaseExists):
 		return http.StatusConflict, "active_case_exists"
 	case errors.Is(err, domain.ErrSealAlreadyCreated):
 		return http.StatusConflict, "seal_exists"
+	case errors.Is(err, domain.ErrChainBroken):
+		return http.StatusConflict, "chain_broken"
 	case errors.Is(err, domain.ErrStateConflict):
 		return http.StatusConflict, "state_conflict"
 	default:

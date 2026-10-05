@@ -69,16 +69,39 @@
       ]
     },
     {
+      "id": "register-standard",
+      "name": "Register standard",
+      "entry": "POST /standards",
+      "steps": [
+        "decode and validate the standard request",
+        "normalize the code and reject a duplicate identity",
+        "commit the active standard with its superior basis and validity interval"
+      ],
+      "success": "returns the registered standard and a readable snapshot",
+      "failure": "returns stable validation, duplicate code, or lifecycle conflict errors",
+      "verification": "workflowcheck registers, amends, and deactivates standards and rejects invalid intervals and duplicates",
+      "module_ids": [
+        "runtimecheck",
+        "httpapi",
+        "assurance",
+        "domain",
+        "repository",
+        "contracts",
+        "bootstrap"
+      ]
+    },
+    {
       "id": "open-verification-case",
       "name": "Open verification case",
       "entry": "POST /cases",
       "steps": [
         "verify the device exists and is active",
         "reject a second unfinished case for the same device",
+        "resolve the standard chain to the root basis and freeze it as the case basis",
         "open one waiting case with a nominal value and tolerance"
       ],
-      "success": "returns an awaiting_measurement case",
-      "failure": "returns not-found or active-case conflict errors",
+      "success": "returns an awaiting_measurement case with its immutable basis",
+      "failure": "returns not-found, active-case conflict, or chain-broken errors",
       "verification": "workflowcheck opens and reads a case, then rejects a concurrent second case",
       "module_ids": [
         "runtimecheck",
@@ -141,11 +164,34 @@
       "steps": [
         "verify the case is ready for review",
         "select the accepted measurement with the smallest deviation",
-        "create exactly one seal and make the case terminal"
+        "verify the standard chain still resolves to a usable root basis",
+        "create exactly one seal carrying the verified chain and make the case terminal"
       ],
       "success": "returns a sealed case and one evidence seal",
-      "failure": "returns conflict for a non-reviewable case or a duplicate seal",
+      "failure": "returns conflict for a non-reviewable case, a duplicate seal, or a broken chain",
       "verification": "workflowcheck races two seal requests and verifies exactly one succeeds",
+      "module_ids": [
+        "runtimecheck",
+        "httpapi",
+        "assurance",
+        "domain",
+        "repository",
+        "contracts",
+        "bootstrap"
+      ]
+    },
+    {
+      "id": "calibration-chain",
+      "name": "Verify calibration chain",
+      "entry": "POST /cases, POST /cases/{id}/measurements, POST /cases/{id}/seal",
+      "steps": [
+        "resolve the chain from the associated standard to the root basis",
+        "reject missing references, deactivated or expired standards, and cycles",
+        "keep formed case bases and sealed evidence readable as historical facts"
+      ],
+      "success": "cases, measurements, and seals proceed only while the chain is usable",
+      "failure": "returns chain-broken conflicts when the chain is incomplete, cyclic, expired, or deactivated",
+      "verification": "workflowcheck builds multi-level chains, breaks them by deactivation, expiry, and cycles, and verifies blocking plus historical reads",
       "module_ids": [
         "runtimecheck",
         "httpapi",

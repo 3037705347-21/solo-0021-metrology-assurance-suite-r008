@@ -24,12 +24,13 @@ type VerificationCase struct {
 	Steward   string     `json:"steward"`
 	State     CaseState  `json:"state"`
 	Version   int        `json:"version"`
+	Basis     CaseBasis  `json:"basis"`
 	OpenedAt  time.Time  `json:"opened_at"`
 	UpdatedAt time.Time  `json:"updated_at"`
 	SealedAt  *time.Time `json:"sealed_at,omitempty"`
 }
 
-func NewVerificationCase(id, deviceID string, nominal, tolerance float64, steward string, at time.Time) (VerificationCase, error) {
+func NewVerificationCase(id, deviceID string, nominal, tolerance float64, steward string, basis CaseBasis, at time.Time) (VerificationCase, error) {
 	item := VerificationCase{
 		ID:        strings.TrimSpace(id),
 		DeviceID:  strings.TrimSpace(deviceID),
@@ -38,6 +39,7 @@ func NewVerificationCase(id, deviceID string, nominal, tolerance float64, stewar
 		Steward:   strings.TrimSpace(steward),
 		State:     CaseAwaitingMeasurement,
 		Version:   1,
+		Basis:     basis,
 		OpenedAt:  at.UTC(),
 		UpdatedAt: at.UTC(),
 	}
@@ -56,6 +58,9 @@ func (c VerificationCase) Validate() error {
 	}
 	if c.Version < 1 || c.OpenedAt.IsZero() || c.UpdatedAt.IsZero() {
 		return fmt.Errorf("%w: case version and timestamps are required", ErrInvalidInput)
+	}
+	if err := c.Basis.Validate(); err != nil {
+		return err
 	}
 	switch c.State {
 	case CaseAwaitingMeasurement, CaseReviewReady, CaseRecheckRequired, CaseSealed:

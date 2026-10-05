@@ -77,6 +77,154 @@ func (s *Service) Device(ctx context.Context, id string) (domain.Device, error) 
 	return found, err
 }
 
+func (s *Service) RegisterStandard(ctx context.Context, input contracts.RegisterStandardRequest) (domain.Standard, error) {
+	var created domain.Standard
+	code := domain.NormalizeStandardCode(input.Code)
+	err := s.repository.Mutate(ctx, func(m *repository.Mutation) error {
+		if _, exists := m.StandardByCode(code); exists {
+			return fmt.Errorf("%w: %s", domain.ErrDuplicateStandardCode, code)
+		}
+		item, err := domain.NewStandard(
+			m.NextID("standard"),
+			input.Code,
+			input.SuperiorID,
+			input.ValidFrom,
+			input.ValidUntil,
+			input.Steward,
+			s.now(),
+		)
+		if err != nil {
+			return err
+		}
+		if err := m.PutStandard(item); err != nil {
+			return err
+		}
+		detail := "standard registered as a root basis"
+		if item.SuperiorID != "" {
+			detail = fmt.Sprintf("standard registered under superior basis %s", item.SuperiorID)
+		}
+		event, err := domain.NewAuditEvent(
+			m.NextID("event"),
+			"standard",
+			item.ID,
+			"",
+			"standard_registered",
+			item.Steward,
+			detail,
+			s.now(),
+		)
+		if err != nil {
+			return err
+		}
+		m.AppendEvent(event)
+		created = item
+		return nil
+	})
+	return created, err
+}
+
+func (s *Service) Standard(ctx context.Context, id string) (domain.Standard, error) {
+	var found domain.Standard
+	err := s.repository.Read(ctx, func(snapshot repository.Snapshot) error {
+		item, exists := snapshot.Standard(strings.TrimSpace(id))
+		if !exists {
+			return fmt.Errorf("%w: standard %s", domain.ErrNotFound, id)
+		}
+		found = item
+		return nil
+	})
+	return found, err
+}
+
+func (s *Service) AmendStandardBasis(ctx context.Context, id string, input contracts.AmendStandardRequest) (domain.Standard, error) {
+	var updated domain.Standard
+	err := s.repository.Mutate(ctx, func(m *repository.Mutation) error {
+		item, exists := m.Standard(strings.TrimSpace(id))
+		if !exists {
+			return fmt.Errorf("%w: standard %s", domain.ErrNotFound, id)
+		}
+		if err := item.AmendBasis(input.SuperiorID, input.ValidFrom, input.ValidUntil); err != nil {
+			return err
+		}
+		if err := m.UpdateStandard(item); err != nil {
+			return err
+		}
+		actor := strings.TrimSpace(input.Actor)
+		if actor == "" {
+			actor = item.Steward
+		}
+		detail := fmt.Sprintf("standard basis amended: superior %s, validity %s to %s",
+			item.SuperiorID,
+			item.ValidFrom.Format(time.RFC3339),
+			item.ValidUntil.Format(time.RFC3339),
+		)
+		if item.SuperiorID == "" {
+			detail = fmt.Sprintf("standard basis amended: re-anchored as root, validity %s to %s",
+				item.ValidFrom.Format(time.RFC3339),
+				item.ValidUntil.Format(time.RFC3339),
+			)
+		}
+		event, err := domain.NewAuditEvent(
+			m.NextID("event"),
+			"standard",
+			item.ID,
+			"",
+			"standard_amended",
+			actor,
+			detail,
+			s.now(),
+		)
+		if err != nil {
+			return err
+		}
+		m.AppendEvent(event)
+		updated = item
+		return nil
+	})
+	return updated, err
+}
+
+func (s *Service) DeactivateStandard(ctx context.Context, id string, input contracts.DeactivateStandardRequest) (domain.Standard, error) {
+	var updated domain.Standard
+	err := s.repository.Mutate(ctx, func(m *repository.Mutation) error {
+		item, exists := m.Standard(strings.TrimSpace(id))
+		if !exists {
+			return fmt.Errorf("%w: standard %s", domain.ErrNotFound, id)
+		}
+		if err := item.Deactivate(s.now()); err != nil {
+			return err
+		}
+		if err := m.UpdateStandard(item); err != nil {
+			return err
+		}
+		actor := strings.TrimSpace(input.Actor)
+		if actor == "" {
+			actor = item.Steward
+		}
+		detail := strings.TrimSpace(input.Reason)
+		if detail == "" {
+			detail = "standard deactivated"
+		}
+		event, err := domain.NewAuditEvent(
+			m.NextID("event"),
+			"standard",
+			item.ID,
+			"",
+			"standard_deactivated",
+			actor,
+			detail,
+			s.now(),
+		)
+		if err != nil {
+			return err
+		}
+		m.AppendEvent(event)
+		updated = item
+		return nil
+	})
+	return updated, err
+}
+
 func (s *Service) OpenCase(ctx context.Context, input contracts.OpenCaseRequest) (contracts.CaseResponse, error) {
 	var result contracts.CaseResponse
 	err := s.repository.Mutate(ctx, func(m *repository.Mutation) error {
@@ -91,12 +239,30 @@ func (s *Service) OpenCase(ctx context.Context, input contracts.OpenCaseRequest)
 		if active, exists := m.ActiveCaseForDevice(device.ID); exists {
 			return fmt.Errorf("%w: case %s is still %s", domain.ErrActiveCaseExists, active.ID, active.State)
 		}
+		standardID := strings.TrimSpace(input.StandardID)
+		if standardID != "" {
+			if _, exists := m.Standard(standardID); !exists {
+				return fmt.Errorf("%w: standard %s", domain.ErrNotFound, standardID)
+			}
+		}
+		links, err := domain.ResolveChain(standardID, s.now(), func(linkID string) (domain.Standard, bool) {
+			return m.Standard(linkID)
+		})
+		if err != nil {
+			return err
+		}
+		basis := domain.CaseBasis{
+			StandardID: links[0].StandardID,
+			ResolvedAt: s.now(),
+			Links:      links,
+		}
 		item, err := domain.NewVerificationCase(
 			m.NextID("case"),
 			device.ID,
 			input.Nominal,
 			input.Tolerance,
 			input.Steward,
+			basis,
 			s.now(),
 		)
 		if err != nil {
@@ -112,7 +278,7 @@ func (s *Service) OpenCase(ctx context.Context, input contracts.OpenCaseRequest)
 			item.ID,
 			"case_opened",
 			item.Steward,
-			"verification case opened",
+			fmt.Sprintf("verification case opened against standard %s", item.Basis.StandardID),
 			s.now(),
 		)
 		if err != nil {
@@ -159,6 +325,11 @@ func (s *Service) RecordMeasurement(ctx context.Context, caseID string, input co
 			return err
 		}
 		if err := item.RecordMeasurement(measurement.Accepted, s.now()); err != nil {
+			return err
+		}
+		if _, err := domain.ResolveChain(item.Basis.StandardID, s.now(), func(linkID string) (domain.Standard, bool) {
+			return m.Standard(linkID)
+		}); err != nil {
 			return err
 		}
 		if err := m.AppendMeasurement(measurement); err != nil {
@@ -247,6 +418,12 @@ func (s *Service) SealCase(ctx context.Context, caseID string, input contracts.S
 		if !ok {
 			return fmt.Errorf("%w: an accepted measurement is required before sealing", domain.ErrStateConflict)
 		}
+		links, err := domain.ResolveChain(item.Basis.StandardID, s.now(), func(linkID string) (domain.Standard, bool) {
+			return m.Standard(linkID)
+		})
+		if err != nil {
+			return err
+		}
 		if err := item.Seal(s.now()); err != nil {
 			return err
 		}
@@ -257,6 +434,7 @@ func (s *Service) SealCase(ctx context.Context, caseID string, input contracts.S
 			measurement.ID,
 			input.Reviewer,
 			input.Summary,
+			links,
 			s.now(),
 		)
 		if err != nil {
